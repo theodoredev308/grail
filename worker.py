@@ -51,6 +51,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
+# Optional multi-Redis support.
+# If REDIS_URLS is non-empty, the worker will:
+#   - Try to pop work from each Redis in order using non-blocking LPOP
+#   - If *no* Redis has work, block on the first Redis with BLPOP until new jobs arrive
+# Otherwise, it falls back to single-Redis mode using --redis-url / REDIS_URL.
+REDIS_URLS: list[str] = []
+
 
 class WorkerState:
     """Clean state management for worker resources."""
@@ -406,8 +413,75 @@ async def process_job(state: WorkerState, job_data: dict) -> dict:
         }
 
 
+async def _consume_one(
+    state: WorkerState,
+    redis_client: aioredis.Redis,
+    job_queue: str,
+    result_queue: str,
+    *,
+    blocking: bool,
+) -> tuple[bool, int | None]:
+    """
+    Consume a single job from a specific Redis.
+
+        Returns:
+            (job_found, window_start)
+            - job_found: True if a job was found (and processed), False if the queue was empty.
+            - window_start: The job's window_start if available, else None.
+    """
+    window_start: int | None = None
+
+    try:
+        if blocking:
+            # Blocking pop: returns (key, value)
+            item = await redis_client.blpop(job_queue, timeout=0)
+            if item is None:
+                return False, None
+            _, job_payload = item
+        else:
+            # Non-blocking pop: returns value or None
+            job_payload = await redis_client.lpop(job_queue)
+            if job_payload is None:
+                return False, None
+
+        # Parse job
+        try:
+            job_data = json.loads(job_payload)
+            # Extract window_start for window-change detection
+            ws_raw = job_data.get("window_start")
+            if ws_raw is not None:
+                try:
+                    window_start = int(ws_raw)
+                except (TypeError, ValueError):
+                    window_start = None
+        except Exception as e:
+            logger.error(f"Failed to parse job payload: {e}")
+            # There *was* a job; it was just malformed
+            return True, window_start
+
+        # Process job
+        result = await process_job(state, job_data)
+
+        # Push result back to the same Redis
+        try:
+            await redis_client.rpush(result_queue, json.dumps(result))
+        except Exception as e:
+            logger.error(f"Failed to push result to Redis: {e}")
+
+        return True, window_start
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"Error while consuming job: {e}")
+        traceback.print_exc()
+        # Signal that we attempted a pop (queue might have had data or not),
+        # but for scheduling purposes we treat as "no job" to move on.
+        return False, None
+
+
 async def worker_loop(
-    redis_url: str,
+    redis_urls: list[str],
     job_queue: str,
     result_queue: str,
     device: str,
@@ -416,50 +490,78 @@ async def worker_loop(
     """Main worker loop - consume jobs from Redis and process them.
 
     Args:
-        redis_url: Redis connection URL
+        redis_urls: List of Redis connection URLs
         job_queue: Queue name for incoming jobs
         result_queue: Queue name for results
         device: Device for model (cuda/cpu)
         max_concurrent: Maximum concurrent jobs (default 1 for sequential processing)
     """
-    # Initialize worker state
+    if not redis_urls:
+        raise ValueError("redis_urls must not be empty")
+
+    # Initialize worker state (shared across all Redis instances)
     state = WorkerState(device=device)
 
     try:
-        # Connect to Redis
-        redis_client = aioredis.from_url(redis_url, decode_responses=True)
-        logger.info(f"✅ Connected to Redis at {redis_url}")
+        # Connect to all Redis instances up front
+        clients: list[aioredis.Redis] = []
+        for url in redis_urls:
+            client = aioredis.from_url(url, decode_responses=True)
+            clients.append(client)
+            logger.info(f"✅ Connected to Redis at {url}")
+
         logger.info(f"📥 Consuming from queue: {job_queue}")
         logger.info(f"📤 Publishing to queue: {result_queue}")
         logger.info(f"🖥️  Device: {device}")
 
+        idx = 0  # Round-robin starting index
+        last_window_start: int | None = None
+
         while True:
             try:
-                # Blocking pop with timeout
-                item = await redis_client.blpop(job_queue, timeout=5)
+                job_found = False
 
-                if item is None:
-                    # No jobs available, continue
-                    await asyncio.sleep(0.1)
-                    continue
+                # First pass: non-blocking scan across all Redis instances
+                for offset in range(len(clients)):
+                    client_idx = (idx + offset) % len(clients)
+                    client = clients[client_idx]
+                    job_found_here, window_start = await _consume_one(
+                        state,
+                        client,
+                        job_queue,
+                        result_queue,
+                        blocking=False,
+                    )
+                    if job_found_here:
+                        job_found = True
+                        # If window changed, restart scanning from primary (index 0)
+                        if (
+                            window_start is not None
+                            and last_window_start is not None
+                            and window_start != last_window_start
+                        ):
+                            idx = 0
+                        else:
+                            idx = client_idx  # Next scan starts from here
 
-                _, job_payload = item
+                        if window_start is not None:
+                            last_window_start = window_start
+                        break
 
-                # Parse job
-                try:
-                    job_data = json.loads(job_payload)
-                except Exception as e:
-                    logger.error(f"Failed to parse job payload: {e}")
-                    continue
-
-                # Process job
-                result = await process_job(state, job_data)
-
-                # Push result back to Redis
-                try:
-                    await redis_client.rpush(result_queue, json.dumps(result))
-                except Exception as e:
-                    logger.error(f"Failed to push result to Redis: {e}")
+                if not job_found:
+                    # No work on any Redis: block on the *first* Redis until new jobs arrive.
+                    primary = clients[0]
+                    job_found_here, window_start = await _consume_one(
+                        state,
+                        primary,
+                        job_queue,
+                        result_queue,
+                        blocking=True,
+                    )
+                    # After blocking on primary, always restart scanning from it
+                    idx = 0
+                    if window_start is not None:
+                        last_window_start = window_start
 
             except asyncio.CancelledError:
                 logger.info("Worker cancelled, shutting down...")
@@ -512,8 +614,11 @@ def main() -> None:
     logger.info("=" * 80)
     logger.info("GRAIL Worker Starting")
     logger.info("=" * 80)
+    # Resolve list of Redis URLs
+    redis_urls = REDIS_URLS or [args.redis_url]
+
     logger.info(f"Device: {args.device}")
-    logger.info(f"Redis URL: {args.redis_url}")
+    logger.info(f"Redis URLs: {redis_urls}")
     logger.info(f"Job Queue: {args.job_queue}")
     logger.info(f"Result Queue: {args.result_queue}")
     logger.info(f"Max Concurrent: {args.max_concurrent}")
@@ -523,7 +628,7 @@ def main() -> None:
     try:
         asyncio.run(
             worker_loop(
-                redis_url=args.redis_url,
+                redis_urls=redis_urls,
                 job_queue=args.job_queue,
                 result_queue=args.result_queue,
                 device=args.device,
