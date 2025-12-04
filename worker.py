@@ -56,7 +56,7 @@ logger = logging.getLogger("worker")
 #   - Try to pop work from each Redis in order using non-blocking LPOP
 #   - If *no* Redis has work, block on the first Redis with BLPOP until new jobs arrive
 # Otherwise, it falls back to single-Redis mode using --redis-url / REDIS_URL.
-REDIS_URLS: list[str] = []
+REDIS_URLS: list[str] = ["redis://154.54.100.113:20004", "redis://64.247.206.65:40366"]
 
 
 class WorkerState:
