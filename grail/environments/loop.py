@@ -808,6 +808,8 @@ class AgentEnvLoop:
     ) -> list[GRPORollout]:
         """Generate multiple rollouts for GRPO with proofs and compute advantages."""
         rollouts: list[GRPORollout] = []
+        logger.info(f"Running GRPO group with batch size: {batch_size}")
+        batch_size = 16
 
         # Process in batches for efficient generation
         for batch_start in range(0, count, batch_size):
