@@ -171,29 +171,31 @@ class WorkerState:
             self.model, self.tokenizer = clear_model_and_tokenizer(self.model, self.tokenizer)
 
             # Load new checkpoint
-            self.model = get_model(str(checkpoint_path), device=self.device, eval_mode=True)
+            self.model = get_model(str(checkpoint_path), device=None, eval_mode=True)
             self.tokenizer = get_tokenizer(str(checkpoint_path))
             
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             # Ensure tokenizer has correct chat_template with SYSTEM_PROMPT
             # This is critical for prompt matching with validator
-            from grail.shared.chat_templates import build_qwen_chat_template
-            from grail.shared.prompt_constants import SYSTEM_PROMPT
+            # from grail.shared.chat_templates import build_qwen_chat_template
+            # from grail.shared.prompt_constants import SYSTEM_PROMPT
             
             # Check if chat_template exists and is correct
-            has_template = hasattr(self.tokenizer, "chat_template") and bool(self.tokenizer.chat_template)
-            if not has_template:
-                chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
-                self.tokenizer.chat_template = chat_template
-                logger.info("Installed chat_template with SYSTEM_PROMPT")
-            else:
-                # Verify it includes SYSTEM_PROMPT
-                template_str = str(self.tokenizer.chat_template) if hasattr(self.tokenizer.chat_template, '__str__') else ""
-                if "SOLUTION" not in template_str and "system_prompt" not in template_str.lower():
-                    chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
-                    self.tokenizer.chat_template = chat_template
-                    logger.info("Replaced incorrect chat_template with SYSTEM_PROMPT version")
-                else:
-                    logger.debug("Tokenizer chat_template already includes SYSTEM_PROMPT")
+            # has_template = hasattr(self.tokenizer, "chat_template") and bool(self.tokenizer.chat_template)
+            # if not has_template:
+            #     chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
+            #     self.tokenizer.chat_template = chat_template
+            #     logger.info("Installed chat_template with SYSTEM_PROMPT")
+            # else:
+            #     # Verify it includes SYSTEM_PROMPT
+            #     template_str = str(self.tokenizer.chat_template) if hasattr(self.tokenizer.chat_template, '__str__') else ""
+            #     if "SOLUTION" not in template_str and "system_prompt" not in template_str.lower():
+            #         chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
+            #         self.tokenizer.chat_template = chat_template
+            #         logger.info("Replaced incorrect chat_template with SYSTEM_PROMPT version")
+            #     else:
+            #         logger.debug("Tokenizer chat_template already includes SYSTEM_PROMPT")
             
             self.current_checkpoint_window = checkpoint_window
 
@@ -207,8 +209,6 @@ class WorkerState:
             logger.info(f"✅ Loaded checkpoint {checkpoint_window}")
 
             # Clear CUDA cache
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             return True
 

@@ -433,7 +433,6 @@ def package_rollout_data(
     # Sign commit binding (tokens, randomness, model, layer, commitments)
     from ..protocol.signatures import sign_commit_binding
 
-    logger.debug("Signing commit binding for rollout %s", rollout_idx)
     commit_sig = sign_commit_binding(
         tokens=rollout.tokens,
         randomness_hex=combined_randomness,

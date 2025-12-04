@@ -357,7 +357,7 @@ async def run(args: argparse.Namespace) -> None:
     logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
 
     # Configuration
-    max_groups_per_window = int(os.getenv("GRAIL_MAX_GROUPS_PER_WINDOW", "2560"))
+    max_groups_per_window = int(os.getenv("GRAIL_MAX_GROUPS_PER_WINDOW", "320"))
     temperature = float(os.getenv("GRAIL_TEMPERATURE", "0.85"))
     upload_threshold = int(os.getenv("GRAIL_UPLOAD_THRESHOLD", "64"))
     use_drand_flag = os.getenv("GRAIL_USE_DRAND", "1").lower() not in (
@@ -415,10 +415,7 @@ async def run(args: argparse.Namespace) -> None:
             window_block_hash, randomness = await derive_randomness(
                 subtensor, window_start, use_drand_flag
             )
-            logger.info(
-                f"🎲 Window {window_start}: hash={window_block_hash[:12]}... "
-                f"rand={randomness[:12]}..."
-            )
+
 
             # Clear old jobs/results
             try:

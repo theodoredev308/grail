@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover - optional in offline mode
 import numpy as np
 import torch
 
-from ..shared.constants import GRAIL_PROOF_VERSION, LAYER_INDEX, MAX_NEW_TOKENS
+from ..shared.constants import CHALLENGE_K, GRAIL_PROOF_VERSION, LAYER_INDEX, MAX_NEW_TOKENS
 from ..shared.hf_compat import resolve_hidden_size
 from .core import ChatMessage, MultiTurnEnv
 
@@ -132,6 +132,9 @@ class GenerationParams:
     top_k: int | None = 50
     repetition_penalty: float | None = 1.1
     trim_right_padding: bool = False
+    # Optional lower bound on completion length (in tokens). When set to CHALLENGE_K,
+    # this helps avoid validator failures for "completion too short".
+    min_new_tokens: int | None = None
 
 
 class TextGenBackend(Protocol):
@@ -226,6 +229,9 @@ class HFBackend:
             "pad_token_id": pad_id,
             "eos_token_id": eos_id,
         }
+        # Enforce a minimum completion length when requested (HF generate supports this)
+        if params.min_new_tokens is not None:
+            gen_kwargs["min_new_tokens"] = int(params.min_new_tokens)
         if params.top_k is not None:
             gen_kwargs["top_k"] = int(params.top_k)
         if params.repetition_penalty is not None:
@@ -713,6 +719,8 @@ class AgentEnvLoop:
             top_k=top_k,
             repetition_penalty=repetition_penalty,
             trim_right_padding=False,
+            # Ensure completions are long enough for CHALLENGE_K-proof validation
+            min_new_tokens=CHALLENGE_K,
         )
 
         # Default backend: reuse the same HF model instance for generation
@@ -808,9 +816,7 @@ class AgentEnvLoop:
     ) -> list[GRPORollout]:
         """Generate multiple rollouts for GRPO with proofs and compute advantages."""
         rollouts: list[GRPORollout] = []
-        logger.info(f"Running GRPO group with batch size: {batch_size}")
-        batch_size = 16
-
+        batch_size = 8
         # Process in batches for efficient generation
         for batch_start in range(0, count, batch_size):
             batch_end = min(batch_start + batch_size, count)
