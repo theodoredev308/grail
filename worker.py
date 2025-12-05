@@ -40,6 +40,7 @@ from grail.shared.constants import (
     CURRENT_ENV_ID,
     ROLLOUTS_PER_PROBLEM,
     WINDOW_LENGTH,
+    MAX_NEW_TOKENS,
 )
 
 # Configure logging
@@ -56,8 +57,8 @@ logger = logging.getLogger("worker")
 #   - Try to pop work from each Redis in order using non-blocking LPOP
 #   - If *no* Redis has work, block on the first Redis with BLPOP until new jobs arrive
 # Otherwise, it falls back to single-Redis mode using --redis-url / REDIS_URL.
-REDIS_URLS: list[str] = ["redis://154.54.100.113:20004", "redis://64.247.206.65:40366", "redis://64.247.206.73:40067", "redis://154.54.100.100:20002"]
-
+# REDIS_URLS: list[str] = ["redis://154.54.100.113:20004", "redis://64.247.206.65:40366", "redis://64.247.206.73:40067", "redis://154.54.100.100:20002"]
+REDIS_URLS: list[str] = ["redis://localhost:20000"]
 
 class WorkerState:
     """Clean state management for worker resources."""
@@ -180,38 +181,42 @@ class WorkerState:
             # Load new checkpoint
             self.model = get_model(str(checkpoint_path), device=None, eval_mode=True)
             self.tokenizer = get_tokenizer(str(checkpoint_path))
-            
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            # Ensure tokenizer has correct chat_template with SYSTEM_PROMPT
-            # This is critical for prompt matching with validator
-            # from grail.shared.chat_templates import build_qwen_chat_template
-            # from grail.shared.prompt_constants import SYSTEM_PROMPT
-            
-            # Check if chat_template exists and is correct
-            # has_template = hasattr(self.tokenizer, "chat_template") and bool(self.tokenizer.chat_template)
-            # if not has_template:
-            #     chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
-            #     self.tokenizer.chat_template = chat_template
-            #     logger.info("Installed chat_template with SYSTEM_PROMPT")
-            # else:
-            #     # Verify it includes SYSTEM_PROMPT
-            #     template_str = str(self.tokenizer.chat_template) if hasattr(self.tokenizer.chat_template, '__str__') else ""
-            #     if "SOLUTION" not in template_str and "system_prompt" not in template_str.lower():
-            #         chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
-            #         self.tokenizer.chat_template = chat_template
-            #         logger.info("Replaced incorrect chat_template with SYSTEM_PROMPT version")
-            #     else:
-            #         logger.debug("Tokenizer chat_template already includes SYSTEM_PROMPT")
-            
+
             self.current_checkpoint_window = checkpoint_window
 
-            # Initialize AgentEnvLoop for generation (matches original miner exactly)
+            # Initialize AgentEnvLoop for generation with conservative sampling
+            # defaults to reduce low-probability EOS terminations while keeping
+            # length constraints aligned with validator expectations.
+            temperature = 0.4
+            top_p = 0.9
+            top_k = 50
+            repetition_penalty = 1.1
+            max_new_tokens = MAX_NEW_TOKENS
+
+            logger.info(
+                "AgentEnvLoop sampling config: max_new_tokens=%d, temperature=%.3f, "
+                "top_p=%.3f, top_k=%d, rep_penalty=%.3f",
+                max_new_tokens,
+                temperature,
+                top_p,
+                top_k,
+                repetition_penalty,
+            )
+
             # Note: batch_size is passed to run_grpo_group, not to __init__
             self.agent_loop = AgentEnvLoop(
                 self.model,
                 self.tokenizer,
                 self.model.device,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=False,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
             )
             logger.info(f"✅ Loaded checkpoint {checkpoint_window}")
 
