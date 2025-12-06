@@ -6,3 +6,8 @@ nohup: ignoring input
 615092:M 05 Dec 2025 01:18:19.422 # WARNING: The TCP backlog setting of 10240 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 4096.
 615092:M 05 Dec 2025 01:18:19.422 # Server initialized
 615092:M 05 Dec 2025 01:18:19.424 * Ready to accept connections
+615092:M 05 Dec 2025 07:10:09.188 # Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host: commands to Redis. This is likely due to an attacker attempting to use Cross Protocol Scripting to compromise your Redis instance. Connection aborted.
+615092:M 05 Dec 2025 07:22:10.894 # Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host: commands to Redis. This is likely due to an attacker attempting to use Cross Protocol Scripting to compromise your Redis instance. Connection aborted.
+615092:M 05 Dec 2025 14:38:36.621 # Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host: commands to Redis. This is likely due to an attacker attempting to use Cross Protocol Scripting to compromise your Redis instance. Connection aborted.
+615092:M 05 Dec 2025 18:44:52.024 # Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host: commands to Redis. This is likely due to an attacker attempting to use Cross Protocol Scripting to compromise your Redis instance. Connection aborted.
+615092:M 05 Dec 2025 19:09:47.664 # Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host: commands to Redis. This is likely due to an attacker attempting to use Cross Protocol Scripting to compromise your Redis instance. Connection aborted.

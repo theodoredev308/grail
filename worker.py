@@ -52,14 +52,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
-# Optional multi-Redis support.
-# If REDIS_URLS is non-empty, the worker will:
-#   - Try to pop work from each Redis in order using non-blocking LPOP
-#   - If *no* Redis has work, block on the first Redis with BLPOP until new jobs arrive
-# Otherwise, it falls back to single-Redis mode using --redis-url / REDIS_URL.
-REDIS_URLS: list[str] = ["redis://64.247.206.65:40152", "redis://154.54.100.113:20004","redis://154.54.100.72:20006", "redis://64.247.196.104:20000"]
-# REDIS_URLS: list[str] = ["redis://localhost:20000"]
-
 class WorkerState:
     """Clean state management for worker resources."""
 
@@ -486,7 +478,7 @@ async def _consume_one(
 
 
 async def worker_loop(
-    redis_urls: list[str],
+    redis_url: str,
     job_queue: str,
     result_queue: str,
     device: str,
@@ -495,78 +487,37 @@ async def worker_loop(
     """Main worker loop - consume jobs from Redis and process them.
 
     Args:
-        redis_urls: List of Redis connection URLs
+        redis_url: Redis connection URL
         job_queue: Queue name for incoming jobs
         result_queue: Queue name for results
         device: Device for model (cuda/cpu)
         max_concurrent: Maximum concurrent jobs (default 1 for sequential processing)
     """
-    if not redis_urls:
-        raise ValueError("redis_urls must not be empty")
+    if not redis_url:
+        raise ValueError("redis_url must not be empty")
 
-    # Initialize worker state (shared across all Redis instances)
+    # Initialize worker state
     state = WorkerState(device=device)
 
     try:
-        # Connect to all Redis instances up front
-        clients: list[aioredis.Redis] = []
-        for url in redis_urls:
-            client = aioredis.from_url(url, decode_responses=True)
-            clients.append(client)
-            logger.info(f"✅ Connected to Redis at {url}")
+        # Connect to the single Redis instance
+        client: aioredis.Redis = aioredis.from_url(redis_url, decode_responses=True)
+        logger.info(f"✅ Connected to Redis at {redis_url}")
 
         logger.info(f"📥 Consuming from queue: {job_queue}")
         logger.info(f"📤 Publishing to queue: {result_queue}")
         logger.info(f"🖥️  Device: {device}")
 
-        idx = 0  # Round-robin starting index
-        last_window_start: int | None = None
-
         while True:
             try:
-                job_found = False
-
-                # First pass: non-blocking scan across all Redis instances
-                for offset in range(len(clients)):
-                    client_idx = (idx + offset) % len(clients)
-                    client = clients[client_idx]
-                    job_found_here, window_start = await _consume_one(
-                        state,
-                        client,
-                        job_queue,
-                        result_queue,
-                        blocking=False,
-                    )
-                    if job_found_here:
-                        job_found = True
-                        # If window changed, restart scanning from primary (index 0)
-                        if (
-                            window_start is not None
-                            and last_window_start is not None
-                            and window_start != last_window_start
-                        ):
-                            idx = 0
-                        else:
-                            idx = client_idx  # Next scan starts from here
-
-                        if window_start is not None:
-                            last_window_start = window_start
-                        break
-
-                if not job_found:
-                    # No work on any Redis: block on the *first* Redis until new jobs arrive.
-                    primary = clients[0]
-                    job_found_here, window_start = await _consume_one(
-                        state,
-                        primary,
-                        job_queue,
-                        result_queue,
-                        blocking=True,
-                    )
-                    # After blocking on primary, always restart scanning from it
-                    idx = 0
-                    if window_start is not None:
-                        last_window_start = window_start
+                # Block until a job is available from the single Redis instance
+                await _consume_one(
+                    state,
+                    client,
+                    job_queue,
+                    result_queue,
+                    blocking=True,
+                )
 
             except asyncio.CancelledError:
                 logger.info("Worker cancelled, shutting down...")
@@ -619,11 +570,9 @@ def main() -> None:
     logger.info("=" * 80)
     logger.info("GRAIL Worker Starting")
     logger.info("=" * 80)
-    # Resolve list of Redis URLs
-    redis_urls = REDIS_URLS or [args.redis_url]
 
     logger.info(f"Device: {args.device}")
-    logger.info(f"Redis URLs: {redis_urls}")
+    logger.info(f"Redis URL: {args.redis_url}")
     logger.info(f"Job Queue: {args.job_queue}")
     logger.info(f"Result Queue: {args.result_queue}")
     logger.info(f"Max Concurrent: {args.max_concurrent}")
@@ -633,7 +582,7 @@ def main() -> None:
     try:
         asyncio.run(
             worker_loop(
-                redis_urls=redis_urls,
+                redis_url=args.redis_url,
                 job_queue=args.job_queue,
                 result_queue=args.result_queue,
                 device=args.device,
